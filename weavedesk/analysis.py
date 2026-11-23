@@ -7,11 +7,31 @@ import numpy as np
 from image_lab.validation import Invalid
 
 from .model import number
-from .photos import coordinates, image, region
+from .photos import along, coordinates, distance, image, kept, region, segment_band, side_mask, straight_line
 
 
 def tint(shown, mask, color, amount=.58):
     shown[mask] = shown[mask] * (1 - amount) + np.asarray(color) * amount
+
+
+def missing_capture(frame, transmitted):
+    """Cloth inside the sheet that this photograph does not show, away from the frame edge.
+
+    Transmitted-light openings are their own kind of gap, so they are excluded here. The source's
+    transparent surround and hollows are not capture gaps; only cloth that was in frame but carries
+    no pixels at all counts, and specks below the area limit are ignored as texture noise.
+    """
+    interior = np.zeros(frame.support.shape, dtype=bool)
+    interior[1:-1, 1:-1] = True
+    unseen = frame.unseen if frame.unseen is not None else ~frame.support
+    raw = (unseen & interior & ~transmitted).astype(np.uint8)
+    count, labels, stats, _centroids = cv.connectedComponentsWithStats(raw, connectivity=8)
+    pixel_area = frame.step[0] * frame.step[1]
+    found = np.zeros(frame.support.shape, dtype=bool)
+    for label in range(1, count):
+        if stats[label, cv.CC_STAT_AREA] * pixel_area >= .02:
+            found |= labels == label
+    return found
 
 
 def selection(frame, mark, minimum=32):
@@ -30,8 +50,15 @@ def lab(pixels):
     return cv.cvtColor(np.asarray(pixels, np.float32).reshape(-1, 1, 3), cv.COLOR_RGB2LAB).reshape(-1, 3)
 
 
-def cloth_tone(frame, marks, _opts):
-    mask = selection(frame, marks["region"])
+def cloth_tone(frame, marks, _opts, adopted=None):
+    region_mask = selection(frame, marks["region"])
+    mask = region_mask
+    if adopted:
+        # Count only cloth that survives the adopted cut: the kept side, minus the transmitted
+        # openings and cloth the plan found uncaptured in that photograph.
+        mask = region_mask & kept(frame, adopted["line"], adopted["keep"]) & ~adopted["excluded"]
+        if np.count_nonzero(mask) < 32:
+            raise Invalid("The adopted cut leaves too little visible cloth in this patch to measure.")
     lab_pixels = lab(frame.rgb[mask])
     low, center, high = np.percentile(lab_pixels, [10, 50, 90], axis=0)
     rows = [
@@ -41,7 +68,14 @@ def cloth_tone(frame, marks, _opts):
     ]
     shown = image(frame)
     tint(shown, mask, (.38, .78, .86), .28)
-    return {"pixels": int(mask.sum()), "lab": rounded(center), "lightness_spread": round(float(high[0] - low[0]), 4)}, rows, shown
+    if adopted:
+        tint(shown, region_mask & ~mask, (.86, .76, .5), .3)
+    summary = {"pixels": int(mask.sum()), "lab": rounded(center),
+               "lightness_spread": round(float(high[0] - low[0]), 4)}
+    if adopted:
+        summary["kept_by"] = adopted["title"] + " (adopted cut)"
+        summary["cut_away_pct"] = round(100 * (1 - mask.sum() / region_mask.sum()), 3)
+    return summary, rows, shown
 
 
 def dye_contrast(frame, marks, _opts):
@@ -137,6 +171,140 @@ def light_openings(frame, marks, opts):
     tint(shown, openings, (.94, .54, .29))
     return {"opening_pct": round(100 * openings.sum() / area.sum(), 3),
             "open_mm2": round(float(openings.sum() * pixel_area), 4), "openings": count - 1}, rows, shown
+
+
+def visible_openings(frame, area, cutoff, minimum):
+    """Light openings inside the marked patch, specks below the area limit ignored."""
+    pixel_area = frame.step[0] * frame.step[1]
+    count, labels, stats, _centroids = cv.connectedComponentsWithStats(
+        (area & (frame.luma >= cutoff)).astype(np.uint8), connectivity=8)
+    found = []
+    for label in range(1, count):
+        if stats[label, cv.CC_STAT_AREA] * pixel_area < minimum:
+            continue
+        found.append({"mask": labels == label, "area_mm2": float(stats[label, cv.CC_STAT_AREA] * pixel_area)})
+    return found
+
+
+def cut_candidate(frame, mark, line, region_mask, openings, capture):
+    """Evaluate one straight cut line inside the circled cloth against openings and missing capture."""
+    clearance = number(mark["clearance_mm"], "cut clearance (mm)", 0, 100)
+    side = mark["keep"]
+    run, rise = line["direction"]
+    if abs(rise) >= abs(run) and side not in ("left", "right"):
+        raise Invalid("A mostly vertical cut line keeps the cloth to its left or right.")
+    if abs(rise) < abs(run) and side not in ("above", "below"):
+        raise Invalid("A mostly horizontal cut line keeps the cloth above or below it.")
+    pixel_area = frame.step[0] * frame.step[1]
+    reach = along(line, coordinates(mark["points"], frame.rgb.shape) * frame.step)
+    clear_band = segment_band(frame, line, (float(reach.min()), float(reach.max())), clearance) & region_mask
+    gap = float((clear_band & capture).sum() * pixel_area)
+    closest = math.inf
+    for opening in openings:
+        ys, xs = np.nonzero(opening["mask"] & region_mask)
+        if not len(ys):
+            continue
+        points_mm = np.stack((xs * frame.step[0], ys * frame.step[1]), axis=1)
+        closest = min(closest, float(np.min(np.abs(distance(line, points_mm)))))
+    kept_side = side_mask(frame, line, side) & region_mask & frame.support & ~capture
+    kept_area = float(kept_side.sum() * pixel_area)
+    if gap > 0:
+        status, reason = "blocked", "missing capture in the band beside the line"
+    elif closest < clearance:
+        status, reason = "blocked", "a visible opening falls inside the clearance band"
+    elif kept_area <= 0:
+        status, reason = "blocked", "no cloth lies on the kept side"
+    else:
+        status, reason = "pass", ""
+    return {
+        "title": mark["title"], "mark": mark["id"], "line": line, "keep": side,
+        "clearance": clearance, "closest": closest, "gap_mm2": gap, "kept_mm2": kept_area,
+        "status": status, "reason": reason,
+    }
+
+
+def cut_plan(frame, marks, opts):
+    """Weigh two straight cut lines and adopt at most one inside the circled cut-out."""
+    region_mask = region(frame, marks["region"])
+    if np.count_nonzero(region_mask & frame.useful) < 32:
+        raise Invalid("The marked patch needs more usable image pixels.")
+    cutoff = number(opts.get("luma", .62), "transmitted-light threshold", .05, .95)
+    minimum = number(opts.get("minimum_mm2", .05), "opening area (mm²)", .005, 20)
+    transmitted = region_mask & (frame.luma >= cutoff)
+    openings = visible_openings(frame, region_mask, cutoff, minimum)
+    capture = missing_capture(frame, transmitted)
+    candidate_lines = {key: straight_line(coordinates(marks[key]["points"], frame.rgb.shape) * frame.step)
+                       for key in ("first", "second")}
+    if any(line is None for line in candidate_lines.values()):
+        raise Invalid("Each cut line needs two distinct marked points.")
+    candidates = [cut_candidate(frame, marks[key], candidate_lines[key], region_mask, openings, capture)
+                  for key in ("first", "second")]
+    rows = [{
+        "line": index, "title": candidate["title"], "kept_mm2": round(candidate["kept_mm2"], 3),
+        "clearance_mm": candidate["clearance"],
+        "nearest_opening_mm": None if math.isinf(candidate["closest"]) else round(candidate["closest"], 3),
+        "missing_capture_mm2": round(candidate["gap_mm2"], 3),
+        "status": candidate["status"], "reason": candidate["reason"],
+    } for index, candidate in enumerate(candidates, 1)]
+    passing = [candidate for candidate in candidates if candidate["status"] == "pass"]
+    shown = image(frame)
+    tint(shown, capture & region_mask, (.68, .58, .59), .3)
+    for candidate in candidates:
+        draw_cut(shown, frame, candidate, (.36, .72, .88) if candidate["status"] == "pass" else (.82, .45, .31))
+    summary = {
+        "opening_count": len(openings), "passing": len(passing),
+        "adopted": None, "kept_mm2": 0, "clearance_mm": None, "nearest_opening_mm": None,
+        "rule": RULE,
+    }
+    if not passing:
+        return summary, rows, shown, None
+    # Safety first, then yield: keep the passing line that leaves the most cloth.
+    adopted = max(passing, key=lambda candidate: (candidate["kept_mm2"], candidate["closest"]))
+    tint(shown, region_mask & ~side_mask(frame, adopted["line"], adopted["keep"]), (.88, .78, .52), .24)
+    excluded = (capture | transmitted) & region_mask
+    for opening in openings:
+        tint(shown, opening["mask"], (.94, .54, .29), .55)
+        excluded |= opening["mask"]
+    summary.update({
+        "adopted": adopted["title"], "kept_mm2": round(adopted["kept_mm2"], 3),
+        "clearance_mm": adopted["clearance"],
+        "nearest_opening_mm": None if math.isinf(adopted["closest"]) else round(adopted["closest"], 3),
+    })
+    adoption = {
+        "title": adopted["title"], "keep": adopted["keep"], "clearance_mm": adopted["clearance"],
+        "line_mm": line_knots(adopted["line"]), "kept_mm2": round(adopted["kept_mm2"], 3),
+        "excluded": excluded,
+    }
+    return summary, rows, shown, adoption
+
+
+RULE = "Adopt the passing line that retains the most cloth; ties go to the larger opening margin."
+
+
+def line_knots(line):
+    """Two physical points along a fitted line, enough to rebuild it when tone is read later."""
+    return [rounded(line["origin"]), rounded(line["origin"] + line["direction"] * 10)]
+
+
+def draw_cut(shown, frame, candidate, color):
+    width = (frame.support.shape[1] - 1) * frame.step[0]
+    height = (frame.support.shape[0] - 1) * frame.step[1]
+    origin, direction = candidate["line"]["origin"], candidate["line"]["direction"]
+    ends = []
+    for axis, extent in ((0, width), (1, height)):
+        if abs(direction[axis]) < 1e-9:
+            continue
+        for border in (0., extent):
+            t = (border - origin[axis]) / direction[axis]
+            point = origin + direction * t
+            if -1e-6 <= point[0] <= width + 1e-6 and -1e-6 <= point[1] <= height + 1e-6:
+                ends.append(point)
+    if len(ends) >= 2:
+        pair = sorted(ends, key=lambda point: point[0] + point[1])
+        first = tuple(int(round(pair[0][i] / frame.step[i])) for i in (0, 1))
+        last = tuple(int(round(pair[-1][i] / frame.step[i])) for i in (0, 1))
+        if abs(last[0] - first[0]) + abs(last[1] - first[1]) >= 2:
+            cv.line(shown, first, last, color, 2)
 
 
 def selvedge(frame, marks, opts):

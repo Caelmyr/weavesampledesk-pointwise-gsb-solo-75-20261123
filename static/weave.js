@@ -129,6 +129,14 @@ function renderDesk() {
     saved.title, new Date(saved.recorded).toLocaleString(),
     async () => openReading(await api(runURL() + "/readings/" + saved.id)),
   )));
+  const adopted = byId("adopted-cut");
+  const cut = run.cut_adoption;
+  adopted.hidden = !cut;
+  if (cut) {
+    adopted.textContent = "Adopted cut: " + cut.title + " · keep " + state.config.sides[cut.keep].toLowerCase() +
+      " · " + cut.clearance_mm + " mm clearance · " + cut.kept_mm2 + " mm² kept";
+  }
+
   if (!photo) return;
   byId("photo-title").textContent = photo.title;
   byId("photo-info").textContent = [photo.synthetic ? "Synthetic sample" : "Uploaded sample",
@@ -279,7 +287,7 @@ function drawCurrentMarks() {
   const marks = state.run.marks.filter((mark) => mark.photo === state.photo);
   drawPoints(byId("sample-image"), byId("sample-overlay"), marks.map((mark) => ({
     points: mark.points, color: state.marked === mark.id ? "#eb9637" : "#1c9a8f",
-    closed: !["register", "stroke"].includes(mark.purpose),
+    closed: !["register", "stroke", "cut"].includes(mark.purpose),
   })));
 }
 
@@ -331,8 +339,12 @@ function newMark() {
   const photo = activePhoto();
   const purpose = select("purpose", Object.entries(state.config.marks));
   const title = input("title", "text", "", { required: true, maxLength: 100 });
+  const keep = select("keep", Object.entries(state.config.sides));
+  const clearance = input("clearance_mm", "number", 3, { min: 0, max: 100, step: .1, required: true });
+  const cutFields = grid(field("Cloth kept", keep), field("Clearance from openings (mm)", clearance));
   const indicator = element("p");
   const range = () => {
+    if (purpose.value === "cut") return [2, 8];
     if (purpose.value === "stroke") return [2, 2];
     if (purpose.value === "register") return [2, 16];
     return [3, 32];
@@ -341,6 +353,7 @@ function newMark() {
     const [minimum, maximum] = range();
     const instruction = minimum === maximum ? minimum + " points required" : minimum + "–" + maximum + " points";
     indicator.textContent = instruction + " / " + points.length + " placed";
+    cutFields.hidden = purpose.value !== "cut";
   };
   const editor = pointEditor(photoURL(photo) + "/image", update, () => range()[1]);
   update([]);
@@ -350,13 +363,19 @@ function newMark() {
     if (editor.points.length < minimum || editor.points.length > maximum) {
       throw new Error("The selected mark type needs a different number of points.");
     }
-    const run = await api(runURL() + "/marks", "POST", {
+    const mark = {
       revision: state.run.revision, photo: photo.id, title: title.value, purpose: purpose.value, points: editor.points,
-    });
+    };
+    if (purpose.value === "cut") {
+      mark.keep = keep.value;
+      mark.clearance_mm = clearance.valueAsNumber;
+    }
+    const run = await api(runURL() + "/marks", "POST", mark);
     state.marked = run.marks.at(-1).id;
     replaceRun(run);
     dialog.close();
-  }, grid(field("Mark name", title), field("Purpose", purpose)), indicator, editor.node, button("Undo point", editor.clear)));
+  }, grid(field("Mark name", title), field("Purpose", purpose)), cutFields, indicator, editor.node,
+  button("Undo point", editor.clear)));
 }
 
 function showMark(mark) {
@@ -464,6 +483,7 @@ function openReading(reading) {
   links.className = "result-actions";
   links.append(link("Download CSV", url + "/csv"), link("Download evidence packet", url + "/packet"));
   pane.append(hero);
+  if (reading.summary.rule && reading.summary.adopted) pane.append(element("p", reading.summary.rule));
   if (reading.rows.length) pane.append(table(reading.rows));
   pane.append(links);
   open(reading.title, pane);

@@ -11,10 +11,10 @@ MARKS = {
     "undyed": "Undyed reference", "dyed": "Solid dyed reference", "repeat": "Weave repeat patch",
     "transmit": "Transmitted-light patch", "inspect": "Inspection patch",
     "warp": "Warp reference", "weft": "Weft reference", "woven": "Mixed weave patch",
-    "register": "Matched motif points", "stroke": "Selvedge transect",
+    "register": "Matched motif points", "stroke": "Selvedge transect", "cut": "Cut line",
 }
 READINGS = {
-    "cloth-tone": ("Cloth tone", "Measure color and variation in a cloth patch."),
+    "cloth-tone": ("Cloth tone", "Measure color and variation in kept cloth; an adopted cut limits the patch."),
     "dye-contrast": ("Dye contrast", "Compare solid dyed yarn with an undyed control on the same sample."),
     "dyed-coverage": ("Dyed area", "Measure the proportion of a marked design close to the dyed yarn reference."),
     "weave-period": ("Weave periods", "Read dominant spatial periods and fiber directions from a repeat patch."),
@@ -25,8 +25,10 @@ READINGS = {
     "paired-coverage": ("Paired sample coverage", "Locate observations shared by two calibrated textile photographs."),
     "surface-marks": ("Surface spot map", "Find localized mottle and raised-fiber highlights on a raking-light patch."),
     "color-drift": ("Sample color difference", "Read registered color differences in a selected area of two cloth photographs."),
+    "cut-plan": ("Cut plan", "Check two straight cut lines against visible openings and keep the cloth on the marked side."),
 }
-POINT_MARKS = {"register", "stroke"}
+POINT_MARKS = {"register", "stroke", "cut"}
+SIDES = {"left": "Left of line", "right": "Right of line", "above": "Above line", "below": "Below line"}
 IDENTITY = re.compile(r"^[0-9a-f]{24}$")
 
 
@@ -94,14 +96,20 @@ def run_fields(raw):
 def mark_fields(raw):
     data = obj(raw)
     purpose = choice(data.get("purpose"), MARKS, "mark purpose")
-    if purpose == "stroke":
+    if purpose == "cut":
+        minimum, maximum = 2, 8
+    elif purpose == "stroke":
         minimum, maximum = 2, 2
     elif purpose == "register":
         minimum, maximum = 2, 16
     else:
         minimum, maximum = 3, 32
-    return {
+    fields = {
         "title": text(data.get("title"), "a mark title"),
         "purpose": purpose,
         "points": points(data.get("points"), minimum, maximum, MARKS[purpose]),
     }
+    if purpose == "cut":
+        fields["keep"] = choice(data.get("keep"), SIDES, "side to keep")
+        fields["clearance_mm"] = number(data.get("clearance_mm"), "clearance (mm)", 0, 100)
+    return fields

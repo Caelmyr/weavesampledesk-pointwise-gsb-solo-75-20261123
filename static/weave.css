@@ -62,6 +62,7 @@ p { color: var(--muted); }
 .entries button { width: 100%; color: inherit; text-align: left; background: #fcfaf2; }
 .entries button[aria-current="true"], .photo-tabs button[aria-current="true"] { background: var(--tint); border-color: #9baea9; }
 .entries small, .photo-tabs small { display: block; margin-top: 3px; color: var(--muted); }
+#adopted-cut { padding: 0 12px 12px; font-size: .88rem; }
 .demo { margin: 4px 8px 9px; width: calc(100% - 16px); }
 .photo-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 11px; }
 .photo-tabs button { text-align: left; }

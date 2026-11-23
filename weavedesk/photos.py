@@ -20,6 +20,7 @@ class Frame:
     rgb: np.ndarray
     support: np.ndarray
     step: tuple
+    unseen: np.ndarray = None
 
     @property
     def luma(self):
@@ -72,8 +73,15 @@ def plane(capture, run):
     target = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype=np.float32)
     transform = cv.getPerspectiveTransform(origin, target)
     warped = cv.warpPerspective(rgba.astype(np.float32) / 255, transform, (width, height))
-    step = (run["width_mm"] / (width - 1), run["height_mm"] / (height - 1))
-    return Frame(warped[:, :, :3], warped[:, :, 3] >= .999, step)
+    support = warped[:, :, 3] >= .999
+    # Cloth this shot saw but left without pixels: outside its own frame or transparently cut away.
+    # The PNG surround is outside the calibrated sheet, so it is not counted.
+    photographed = cv.warpPerspective(np.full(rgba.shape[:2], 255, np.uint8), transform, (width, height)) >= 128
+    present = cv.warpPerspective((rgba[:, :, 3] > 0).astype(np.uint8), transform, (width, height),
+                                 flags=cv.INTER_NEAREST) >= .5
+    unseen = photographed & ~present
+    return Frame(warped[:, :, :3], support, step=(run["width_mm"] / (width - 1), run["height_mm"] / (height - 1)),
+                 unseen=unseen)
 
 
 def region(frame, mark):
@@ -81,6 +89,66 @@ def region(frame, mark):
     vertices = np.rint(coordinates(mark["points"], bitmap.shape)).astype(np.int32)
     cv.fillPoly(bitmap, [vertices], 1)
     return bitmap.astype(bool)
+
+
+def straight_line(knots):
+    """Least-squares straight line through the marked cut points, in physical mm."""
+    values = np.asarray(knots, dtype=float)
+    if len(values) < 2 or np.linalg.matrix_rank(values - values[0], tol=1e-9) < 1:
+        return None
+    center = values.mean(axis=0)
+    _values, _vectors = np.linalg.eigh((values - center).T @ (values - center))
+    direction = _vectors[:, -1]
+    if direction @ (values[-1] - values[0]) < 0:
+        direction = -direction
+    direction = direction / np.linalg.norm(direction)
+    return {"origin": center, "direction": direction, "normal": np.array([direction[1], -direction[0]])}
+
+
+def along(line, points):
+    return (np.asarray(points, dtype=float) - line["origin"]) @ line["direction"]
+
+
+def distance(line, points):
+    """Signed perpendicular distance in mm to a fitted line."""
+    return (np.asarray(points, dtype=float) - line["origin"]) @ line["normal"]
+
+
+def side_mask(frame, line, side):
+    """Pixels on the kept side of a cut line, using the image's own left/right/above/below axes."""
+    height, width = frame.support.shape
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    x_mm = xx * frame.step[0]
+    y_mm = yy * frame.step[1]
+    origin_x, origin_y = line["origin"]
+    run, rise = line["direction"]
+    if abs(rise) >= abs(run):
+        position = origin_x + run / rise * (y_mm - origin_y)
+        offset = x_mm - position
+        return offset <= 0 if side == "left" else offset >= 0
+    position = origin_y + rise / run * (x_mm - origin_x)
+    offset = y_mm - position
+    return offset <= 0 if side == "above" else offset >= 0
+
+
+def band(frame, line, width_mm):
+    """Pixels within the given perpendicular distance of a cut line."""
+    return segment_band(frame, line, (-np.inf, np.inf), width_mm)
+
+
+def segment_band(frame, line, extent, width_mm):
+    """Band around the marked cut segment only, so beyond its ends the line is not assessed."""
+    height, w = frame.support.shape
+    yy, xx = np.indices((height, w), dtype=np.float32)
+    shift = np.stack((xx * frame.step[0] - line["origin"][0], yy * frame.step[1] - line["origin"][1]), axis=-1)
+    signed = shift @ line["normal"]
+    reach = shift @ line["direction"]
+    low, high = extent
+    return (np.abs(signed) <= width_mm) & (reach >= low - width_mm) & (reach <= high + width_mm)
+
+
+def kept(frame, line, side):
+    return side_mask(frame, line, side) & frame.support
 
 
 def image(frame):
@@ -99,3 +167,17 @@ def png(pixels):
     picture.thumbnail((1500, 1500))
     picture.save(file, "PNG")
     return file.getvalue()
+
+
+def mask_png(mask):
+    file = io.BytesIO()
+    Image.fromarray(np.where(mask, 255, 0).astype(np.uint8), "L").save(file, "PNG")
+    return file.getvalue()
+
+
+def read_mask(data):
+    try:
+        with Image.open(io.BytesIO(data)) as picture:
+            return np.asarray(picture.convert("L")) >= 128
+    except (UnidentifiedImageError, OSError) as error:
+        raise Invalid("The adopted cut mask is unavailable.") from error

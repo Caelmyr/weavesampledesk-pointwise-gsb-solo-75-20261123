@@ -69,7 +69,7 @@ class Library:
             current = stamp()
             run = {
                 **fields, "id": identity(), "revision": 1, "created": current, "updated": current,
-                "photos": photos or [], "marks": marks or [], "readings": [],
+                "photos": photos or [], "marks": marks or [], "readings": [], "cut_adoption": None,
             }
             atomic_write(self.runs / (run["id"] + ".json"), encode_doc(run))
             return run
@@ -107,14 +107,19 @@ class Library:
             raise Invalid("That reading is outside this sample run.")
         return self.read(self.records / (reading_key + ".json"))
 
-    def save_reading(self, key, revision, result):
+    def save_reading(self, key, revision, result, adopted=None):
         reading_key = identity()
         row = {**result, "id": reading_key, "recorded": stamp()}
         path = self.records / (reading_key + ".json")
+        if adopted:
+            adopted = {**adopted, "reading": reading_key}
+            row["adopted_cut"] = reading_key
 
         def append(run):
             if len(run["readings"]) >= 160:
                 raise Invalid("This run already holds 160 saved readings.")
+            if adopted:
+                run["cut_adoption"] = adopted
             atomic_write(path, encode_doc(row))
             run["readings"].append({k: row[k] for k in ("id", "mode", "title", "recorded")})
 

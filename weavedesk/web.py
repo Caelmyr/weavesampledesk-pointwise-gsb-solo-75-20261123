@@ -1,12 +1,13 @@
 """Routes for the woven sample desk and archived reading evidence."""
 from io import BytesIO
 
+import numpy as np
 from flask import Blueprint, Response, jsonify, render_template, request, send_file
 
 from image_lab.validation import Conflict, Invalid
 
 from . import analysis, demo, evidence, photos
-from .model import MARKS, READINGS, ROLES, choice, locate, mark_fields, obj, run_fields, text
+from .model import MARKS, READINGS, ROLES, SIDES, choice, locate, mark_fields, obj, run_fields, text
 from .store import Library, identity, stamp
 
 MEASUREMENTS = {
@@ -15,6 +16,7 @@ MEASUREMENTS = {
     "dyed-coverage": (analysis.dyed_coverage, {"region": "woven", "undyed": "undyed", "dyed": "dyed"}, {}),
     "weave-period": (analysis.weave_period, {"region": "repeat"}, {}),
     "light-openings": (analysis.light_openings, {"region": "transmit"}, {}),
+    "cut-plan": (analysis.cut_plan, {"region": "transmit", "first": "cut", "second": "cut"}, {}),
     "selvedge": (analysis.selvedge, {"line": "stroke"}, {}),
     "motif-offset": (analysis.motif_offsets, {"reference": "register"}, {"comparison": "register"}),
     "yarn-balance": (analysis.yarn_balance, {"warp": "warp", "weft": "weft", "woven": "woven"}, {}),
@@ -26,6 +28,8 @@ PAIRED = {"motif-offset", "paired-coverage", "color-drift"}
 OPTIONS = {
     "dyed-coverage": {"threshold": ["Dyed yarn threshold", .5, .01]},
     "light-openings": {"luma": ["Transmitted light threshold", .62, .01]},
+    "cut-plan": {"luma": ["Transmitted light threshold", .62, .01],
+                 "minimum_mm2": ["Smallest opening to clear (mm²)", .15, .01]},
     "surface-marks": {"contrast": ["Spot contrast", .075, .005], "minimum_mm2": ["Minimum area (mm²)", .15, .01]},
     "color-drift": {"delta_e": ["Color difference threshold", 5, .1]},
 }
@@ -37,6 +41,18 @@ def input_json():
 
 def sample_frame(library, run, photo):
     return photos.plane({**photo, "pixels": photos.decode(library.blob(photo["blob"]).read_bytes())}, run)
+
+
+def adopted_cut(library, run):
+    """Rebuild the adopted cut line and the cloth it excluded on the sample plane."""
+    adoption = run.get("cut_adoption")
+    if not adoption:
+        return None
+    line = photos.straight_line(np.asarray(adoption["line_mm"], dtype=float))
+    if line is None:
+        return None
+    return {"line": line, "keep": adoption["keep"], "title": adoption["title"],
+            "excluded": photos.read_mask(library.blob(adoption["excluded"]).read_bytes())}
 
 
 def measure(library, run, data):
@@ -57,6 +73,7 @@ def measure(library, run, data):
 
     read_marks(source_roles, source)
     used = [source]
+    adoption = None
     if mode in PAIRED:
         other = locate(run["photos"], data.get("other"), "The comparison photograph")
         if other["id"] == source["id"]:
@@ -65,13 +82,25 @@ def measure(library, run, data):
         read_marks(other_roles, other)
         used.append(other)
         summary, rows, pixels = work(source_frame, other_frame, selected, options)
+    elif mode == "cloth-tone":
+        summary, rows, pixels = work(source_frame, selected, options, adopted_cut(library, run))
+    elif mode == "cut-plan":
+        summary, rows, pixels, chosen = work(source_frame, selected, options)
+        if chosen:
+            adoption = {
+                "title": chosen["title"], "keep": chosen["keep"], "clearance_mm": chosen["clearance_mm"],
+                "line_mm": chosen["line_mm"], "kept_mm2": chosen["kept_mm2"],
+                "excluded": library.keep(photos.mask_png(chosen["excluded"])),
+                "reading": None, "recorded": stamp(),
+            }
     else:
         summary, rows, pixels = work(source_frame, selected, options)
-    return {
+    result = {
         "mode": mode, "title": READINGS[mode][0], "summary": summary, "rows": rows, "photos": used,
         "options": options, "marks": selected, "sheet_mm": [run["width_mm"], run["height_mm"]],
         "source_revision": run["revision"], "overlay": library.keep(photos.png(pixels)),
     }
+    return result, adoption
 
 
 def install(app, root):
@@ -93,7 +122,7 @@ def install(app, root):
             _, source_roles, other_roles = MEASUREMENTS[mode]
             definitions[mode] = {"title": title, "help": help_text, "reference": source_roles, "comparison": other_roles,
                                  "paired": mode in PAIRED, "options": OPTIONS.get(mode, {})}
-        return jsonify(readings=definitions, marks=MARKS, roles=ROLES)
+        return jsonify(readings=definitions, marks=MARKS, roles=ROLES, sides=SIDES)
 
     @api.get("/runs")
     def runs():
@@ -192,8 +221,8 @@ def install(app, root):
         run = library.run(key)
         if run["revision"] != data.get("revision"):
             raise Conflict("The run changed. Reload it before saving.")
-        result = measure(library, run, data)
-        updated, reading = library.save_reading(key, data["revision"], result)
+        result, adoption = measure(library, run, data)
+        updated, reading = library.save_reading(key, data["revision"], result, adoption)
         return jsonify(run=updated, reading=reading), 201
 
     @api.get("/runs/<key>/readings/<reading_id>")
