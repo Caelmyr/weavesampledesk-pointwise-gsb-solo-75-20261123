@@ -6,7 +6,7 @@ from flask import Blueprint, Response, jsonify, render_template, request, send_f
 from image_lab.validation import Conflict, Invalid
 
 from . import analysis, demo, evidence, photos
-from .model import MARKS, READINGS, ROLES, choice, locate, mark_fields, obj, run_fields, text
+from .model import MARKS, READINGS, ROLES, choice, identifier, locate, mark_fields, obj, run_fields, text
 from .store import Library, identity, stamp
 
 MEASUREMENTS = {
@@ -17,17 +17,27 @@ MEASUREMENTS = {
     "light-openings": (analysis.light_openings, {"region": "transmit"}, {}),
     "selvedge": (analysis.selvedge, {"line": "stroke"}, {}),
     "motif-offset": (analysis.motif_offsets, {"reference": "register"}, {"comparison": "register"}),
+    "placement-match": (analysis.placement_match, {"reference": "register"}, {"comparison": "register"}),
+    "seam-coverage": (analysis.seam_coverage, {"seam": "seam"}, {}),
     "yarn-balance": (analysis.yarn_balance, {"warp": "warp", "weft": "weft", "woven": "woven"}, {}),
     "paired-coverage": (analysis.paired_coverage, {"region": "inspect"}, {}),
     "surface-marks": (analysis.surface_marks, {"region": "inspect"}, {}),
     "color-drift": (analysis.color_drift, {"region": "inspect"}, {}),
 }
-PAIRED = {"motif-offset", "paired-coverage", "color-drift"}
+PAIRED = {"motif-offset", "placement-match", "seam-coverage", "paired-coverage", "color-drift"}
+OPTIONAL_SLOTS = {"placement-match": {"seam": "seam"}}
 OPTIONS = {
     "dyed-coverage": {"threshold": ["Dyed yarn threshold", .5, .01]},
     "light-openings": {"luma": ["Transmitted light threshold", .62, .01]},
     "surface-marks": {"contrast": ["Spot contrast", .075, .005], "minimum_mm2": ["Minimum area (mm²)", .15, .01]},
     "color-drift": {"delta_e": ["Color difference threshold", 5, .1]},
+    "placement-match": {
+        "candidate_a_dx": ["Candidate A horizontal shift (mm)", 0, .1],
+        "candidate_a_dy": ["Candidate A vertical shift (mm)", 0, .1],
+        "candidate_b_dx": ["Candidate B horizontal shift (mm)", 0, .1],
+        "candidate_b_dy": ["Candidate B vertical shift (mm)", 0, .1],
+        "tolerance_mm": ["Per-centre tolerance (mm)", 2, .1],
+    },
 }
 
 
@@ -48,14 +58,20 @@ def measure(library, run, data):
     marked = obj(data.get("marks", {}))
     selected = {}
 
-    def read_marks(assigned, capture):
-        for slot, purpose in assigned.items():
-            mark = locate(run["marks"], marked.get(slot), MARKS[purpose])
+    def read_marks(assigned, capture, optional=None):
+        merged = {**assigned, **(optional or {})}
+        for slot, purpose in merged.items():
+            mark_id = marked.get(slot)
+            if not mark_id:
+                if slot in (optional or {}):
+                    continue
+                raise Invalid(f"Select a {MARKS[purpose].lower()} mark.")
+            mark = locate(run["marks"], mark_id, MARKS[purpose])
             if mark["photo"] != capture["id"] or mark["purpose"] != purpose:
                 raise Invalid(f"Select a {MARKS[purpose].lower()} mark from the specified photograph.")
             selected[slot] = mark
 
-    read_marks(source_roles, source)
+    read_marks(source_roles, source, OPTIONAL_SLOTS.get(mode, {}))
     used = [source]
     if mode in PAIRED:
         other = locate(run["photos"], data.get("other"), "The comparison photograph")
@@ -64,6 +80,17 @@ def measure(library, run, data):
         other_frame = sample_frame(library, run, other)
         read_marks(other_roles, other)
         used.append(other)
+        if mode == "seam-coverage":
+            raw_placement = data.get("placement")
+            placement_id = raw_placement.get("reading") if isinstance(raw_placement, dict) else raw_placement
+            saved = library.reading(run, identifier(placement_id))
+            if saved["mode"] != "placement-match":
+                raise Invalid("Choose a saved placement match reading.")
+            options = {**options, "placement": {
+                "adopted_shift_mm": saved["summary"]["adopted_shift_mm"],
+                "chosen_candidate": saved["summary"]["chosen_candidate"],
+                "source_reading": saved["id"],
+            }}
         summary, rows, pixels = work(source_frame, other_frame, selected, options)
     else:
         summary, rows, pixels = work(source_frame, selected, options)
@@ -92,7 +119,9 @@ def install(app, root):
         for mode, (title, help_text) in READINGS.items():
             _, source_roles, other_roles = MEASUREMENTS[mode]
             definitions[mode] = {"title": title, "help": help_text, "reference": source_roles, "comparison": other_roles,
-                                 "paired": mode in PAIRED, "options": OPTIONS.get(mode, {})}
+                                 "paired": mode in PAIRED, "options": OPTIONS.get(mode, {}),
+                                 "optional": OPTIONAL_SLOTS.get(mode, {}),
+                                 "requires_placement": mode == "seam-coverage"}
         return jsonify(readings=definitions, marks=MARKS, roles=ROLES)
 
     @api.get("/runs")

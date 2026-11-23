@@ -7,7 +7,7 @@ import numpy as np
 from image_lab.validation import Invalid
 
 from .model import number
-from .photos import coordinates, image, region
+from .photos import Frame, coordinates, image, region
 
 
 def tint(shown, mask, color, amount=.58):
@@ -168,6 +168,29 @@ def selvedge(frame, marks, opts):
     return {"edge_width_mm": round(max(0, width), 4), "length_mm": round(length, 4), "usable_samples": int(valid.sum())}, rows, shown
 
 
+def translated(frame, shift_mm):
+    """Rigidly move a calibrated frame by shift_mm = (dx, dy); only translation is allowed."""
+    delta = np.asarray(shift_mm, dtype=np.float64) / np.asarray(frame.step, dtype=np.float64)
+    matrix = np.array([[1, 0, delta[0]], [0, 1, delta[1]]], dtype=np.float32)
+    height, width = frame.support.shape
+    warped_rgb = cv.warpAffine(frame.rgb, matrix, (width, height), flags=cv.INTER_LINEAR, borderValue=(0, 0, 0))
+    warped_support = cv.warpAffine(frame.support.astype(np.uint8), matrix, (width, height),
+                                   flags=cv.INTER_NEAREST, borderValue=0).astype(bool)
+    return Frame(warped_rgb, warped_support, frame.step)
+
+
+def seam_both_coverage(reference, moved, seam):
+    """Percent of the seam window visible in both photographs once the comparison frame is moved."""
+    if seam is None:
+        return None
+    domain = region(reference, seam)
+    total = int(domain.sum())
+    if total == 0:
+        return None
+    both = domain & reference.useful & moved.useful
+    return round(100.0 * int(both.sum()) / total, 3)
+
+
 def motif_offsets(frame, other, marks, _opts):
     fixed = coordinates(marks["reference"]["points"], frame.rgb.shape)
     moved = coordinates(marks["comparison"]["points"], other.rgb.shape)
@@ -281,3 +304,136 @@ def color_drift(frame, other, marks, opts):
     ]
     return {"median_delta_e76": rows[0]["delta_e76"], "above_tolerance_pct": round(100 * above.sum() / area.sum(), 3),
             "paired_pixels": int(area.sum())}, rows, shown
+
+
+def shift_pair(options, key, bound_mm):
+    x = number(options.get(key + "_dx"), key + " horizontal shift (mm)", -bound_mm, bound_mm)
+    y = number(options.get(key + "_dy"), key + " vertical shift (mm)", -bound_mm, bound_mm)
+    return [round(x, 4), round(y, 4)]
+
+
+def placement_match(frame, other, marks, opts):
+    """Choose one of two translation-only placements whose motif centres all stay within tolerance."""
+    fixed = coordinates(marks["reference"]["points"], frame.rgb.shape)
+    moved_points = coordinates(marks["comparison"]["points"], other.rgb.shape)
+    if fixed.shape != moved_points.shape:
+        raise Invalid("Both motif marks need the same number of centres in corresponding order.")
+    bound = max(frame.rgb.shape[1] * frame.step[0], frame.rgb.shape[0] * frame.step[1])
+    candidates_in = [
+        ("A", shift_pair(opts, "candidate_a", bound)),
+        ("B", shift_pair(opts, "candidate_b", bound)),
+    ]
+    tolerance = number(opts.get("tolerance_mm"), "per-centre tolerance (mm)", .01, bound)
+    seam = marks.get("seam")
+    fixed_mm = fixed * frame.step
+
+    candidates = []
+    for label, shift in candidates_in:
+        moved_plane = (moved_points * frame.step) + np.asarray(shift, dtype=float)
+        delta = fixed_mm - moved_plane
+        residuals = np.linalg.norm(delta, axis=1)
+        coverage = seam_both_coverage(frame, translated(other, shift), seam)
+        candidates.append({
+            "candidate": label, "shift_mm": rounded(shift),
+            "residuals": [round(float(value), 4) for value in residuals],
+            "max_residual_mm": round(float(residuals.max()), 4),
+            "rms_residual_mm": round(float(np.sqrt(np.mean(residuals ** 2))), 4),
+            "seam_both_pct": coverage,
+            "passes": bool(residuals.max() <= tolerance + 1e-9),
+        })
+
+    passing = [item for item in candidates if item["passes"]]
+    if not passing:
+        detail = "; ".join(f"{item['candidate']}: max {item['max_residual_mm']} mm" for item in candidates)
+        raise Invalid("Neither placement keeps every motif centre within tolerance (" + detail + ").")
+    chosen = sorted(
+        passing,
+        key=lambda item: (item["max_residual_mm"],
+                          -(item["seam_both_pct"] if item["seam_both_pct"] is not None else -1.0),
+                          item["rms_residual_mm"], item["candidate"]),
+    )[0]
+
+    reason = "Only this placement kept every motif centre within the tolerance."
+    if len(passing) > 1:
+        runner_up = next(item for item in passing if item["candidate"] != chosen["candidate"])
+        if chosen["max_residual_mm"] != runner_up["max_residual_mm"]:
+            reason = ("Both placements passed; " + chosen["candidate"] +
+                      " aligns the centres more closely (smaller worst-centre residual "
+                      f"{chosen['max_residual_mm']} mm vs {runner_up['max_residual_mm']} mm).")
+        elif chosen["seam_both_pct"] is not None and runner_up["seam_both_pct"] is not None and \
+                chosen["seam_both_pct"] != runner_up["seam_both_pct"]:
+            reason = ("Both placements passed with the same worst-centre residual; " + chosen["candidate"] +
+                      " keeps more of the marked seam visible in both photos ("
+                      f"{chosen['seam_both_pct']}% vs {runner_up['seam_both_pct']}%).")
+        else:
+            reason = ("Both placements passed with the same worst-centre residual and seam coverage; "
+                      + chosen["candidate"] + " has the lower RMS residual.")
+
+    moved_frame = translated(other, chosen["shift_mm"])
+    shown = image(frame)
+    blend = shown * .62 + moved_frame.rgb * .38
+    if seam is not None:
+        domain = region(frame, seam)
+        tint(shown, domain, (.93, .78, .35), .18)
+    shown[moved_frame.support] = blend[moved_frame.support]
+    for index, (fxy, mxy) in enumerate(zip(fixed, moved_points), 1):
+        aligned = (mxy * frame.step + np.asarray(chosen["shift_mm"])) / frame.step
+        start = tuple(np.rint(fxy).astype(int))
+        end = tuple(np.rint(aligned).astype(int))
+        cv.drawMarker(shown, start, (.32, .89, .63), cv.MARKER_CROSS, 16, 2)
+        cv.drawMarker(shown, end, (.98, .56, .31), cv.MARKER_TILTED_CROSS, 16, 2)
+        cv.line(shown, start, end, (.96, .93, .62), 1)
+
+    rows = []
+    for item in candidates:
+        rows.append({
+            "candidate": item["candidate"], "shift_x_mm": item["shift_mm"][0], "shift_y_mm": item["shift_mm"][1],
+            "max_residual_mm": item["max_residual_mm"], "rms_residual_mm": item["rms_residual_mm"],
+            "seam_both_visible_pct": item["seam_both_pct"], "passes_tolerance": item["passes"],
+        })
+    centre_rows = [
+        {"point": index, "reference_mm": rounded(fxy),
+         "comparison_aligned_mm": rounded(mxy * frame.step + np.asarray(chosen["shift_mm"])),
+         "residual_mm": round(float(value), 4)}
+        for index, (fxy, value) in enumerate(zip(fixed_mm, chosen["residuals"]), 1)
+    ]
+    summary = {
+        "chosen_candidate": chosen["candidate"], "adopted_shift_mm": chosen["shift_mm"],
+        "tolerance_mm": round(float(tolerance), 4), "passing_candidates": [item["candidate"] for item in passing],
+        "chosen_max_residual_mm": chosen["max_residual_mm"], "chosen_rms_residual_mm": chosen["rms_residual_mm"],
+        "chosen_seam_both_pct": chosen["seam_both_pct"], "selection_reason": reason,
+    }
+    return summary, rows + centre_rows, shown
+
+
+def seam_coverage(frame, other, marks, opts):
+    """Classify a seam window under a saved translation-only placement."""
+    placement = opts.get("placement")
+    if not isinstance(placement, dict) or not isinstance(placement.get("adopted_shift_mm"), list) \
+            or len(placement["adopted_shift_mm"]) != 2:
+        raise Invalid("Choose a saved placement reading.")
+    shift = placement["adopted_shift_mm"]
+    moved = translated(other, shift)
+    domain = region(frame, marks["seam"])
+    if not np.any(domain):
+        raise Invalid("Mark a larger seam window.")
+    valid_a = domain & frame.useful
+    valid_b = domain & moved.useful
+    groups = [
+        ("Both photos", valid_a & valid_b, (.27, .85, .59)),
+        ("Reference only", valid_a & ~valid_b, (.38, .67, .99)),
+        ("Comparison only", valid_b & ~valid_a, (.73, .51, .91)),
+        ("Neither photo", domain & ~(valid_a | valid_b), (.94, .48, .23)),
+    ]
+    shown = image(frame)
+    total = int(domain.sum())
+    rows = []
+    for label, mask, color in groups:
+        tint(shown, mask, color)
+        rows.append({"observation": label, "pixels": int(mask.sum()),
+                     "percent": round(100 * mask.sum() / total, 3)})
+    summary = {
+        "placement_shift_mm": rounded(shift), "placement_candidate": placement.get("chosen_candidate"),
+        "both_visible_pct": rows[0]["percent"], "seam_pixels": total,
+    }
+    return summary, rows, shown

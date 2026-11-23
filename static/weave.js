@@ -391,7 +391,7 @@ function measurement() {
     hint.textContent = spec.help;
     fields.replaceChildren();
     if (spec.paired) fields.append(field("Comparison photograph", comparison));
-    function addMarks(specification, photo) {
+    function addMarks(specification, photo, optionalSpec) {
       for (const [key, type] of Object.entries(specification)) {
         const entries = state.run.marks.filter((mark) => mark.purpose === type && mark.photo === photo);
         const editor = select(key, entries.map((mark) => [mark.id, mark.title]));
@@ -399,9 +399,21 @@ function measurement() {
         controls[key] = editor;
         fields.append(field(displayName(key) + " / " + state.config.marks[type], editor));
       }
+      for (const [key, type] of Object.entries(optionalSpec || {})) {
+        const entries = state.run.marks.filter((mark) => mark.purpose === type && mark.photo === photo);
+        const editor = select(key, [["", "Not used"], ...entries.map((mark) => [mark.id, mark.title])]);
+        controls[key] = editor;
+        fields.append(field(displayName(key) + " / " + state.config.marks[type] + " (optional)", editor));
+      }
     }
-    addMarks(spec.reference, source.id);
+    addMarks(spec.reference, source.id, spec.optional);
     addMarks(spec.comparison, comparison.value);
+    if (spec.requires_placement) {
+      const placements = state.run.readings.filter((saved) => saved.mode === "placement-match");
+      const editor = select("placement", [["", "Choose a placement"], ...placements.map((saved) => [saved.id, saved.title])]);
+      controls.placement = editor;
+      fields.append(field("Adopted placement reading", editor));
+    }
     for (const [key, [name, initial, step]] of Object.entries(spec.options)) {
       const value = input(key, "number", initial, { step, required: true });
       options[key] = value;
@@ -415,13 +427,19 @@ function measurement() {
   open("Take reading", form("Save reading", async () => {
     const readingType = available[operation.value];
     if (readingType.paired && !comparison.value) throw new Error("Add a second calibrated photograph first.");
-    if (Object.values(controls).some((control) => !control.value)) throw new Error("Mark the required references first.");
-    const result = await api(runURL() + "/readings", "POST", {
+    const optionalKeys = new Set(Object.keys(readingType.optional || {}));
+    const requiredMissing = Object.entries(controls).some(([key, control]) => !control.value && !optionalKeys.has(key));
+    if (requiredMissing) throw new Error("Mark the required references first.");
+    const payload = {
       revision: state.run.revision, mode: operation.value, photo: source.id,
       other: comparison.value,
-      marks: Object.fromEntries(Object.entries(controls).map(([key, control]) => [key, control.value])),
+      marks: Object.fromEntries(Object.entries(controls)
+        .filter(([key]) => key !== "placement" && controls[key].value)
+        .map(([key, control]) => [key, control.value])),
       options: Object.fromEntries(Object.entries(options).map(([key, control]) => [key, control.valueAsNumber])),
-    });
+    };
+    if (readingType.requires_placement) payload.placement = { reading: controls.placement.value };
+    const result = await api(runURL() + "/readings", "POST", payload);
     replaceRun(result.run);
     openReading(result.reading);
   }, field("Reading", operation), hint, fields));

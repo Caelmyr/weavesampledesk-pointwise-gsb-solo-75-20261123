@@ -11,7 +11,7 @@ MARKS = {
     "undyed": "Undyed reference", "dyed": "Solid dyed reference", "repeat": "Weave repeat patch",
     "transmit": "Transmitted-light patch", "inspect": "Inspection patch",
     "warp": "Warp reference", "weft": "Weft reference", "woven": "Mixed weave patch",
-    "register": "Matched motif points", "stroke": "Selvedge transect",
+    "register": "Matched motif points", "stroke": "Selvedge transect", "seam": "Seam window",
 }
 READINGS = {
     "cloth-tone": ("Cloth tone", "Measure color and variation in a cloth patch."),
@@ -21,6 +21,8 @@ READINGS = {
     "light-openings": ("Transmitted openings", "Locate and measure visible pore or tear openings against the dark weave."),
     "selvedge": ("Selvedge transition", "Measure the 10–90% tone change along a line across the woven edge."),
     "motif-offset": ("Motif offsets", "Compare corresponding motif points in two registered sample photographs."),
+    "placement-match": ("Placement match", "Choose between two translation-only placements using ordered motif centres and a per-centre tolerance."),
+    "seam-coverage": ("Seam coverage", "Classify a seam window under a saved placement: both photos, one photo, or neither."),
     "yarn-balance": ("Warp and weft balance", "Compare the mixed weave tone with an equal-area warp and weft blend."),
     "paired-coverage": ("Paired sample coverage", "Locate observations shared by two calibrated textile photographs."),
     "surface-marks": ("Surface spot map", "Find localized mottle and raised-fiber highlights on a raking-light patch."),
