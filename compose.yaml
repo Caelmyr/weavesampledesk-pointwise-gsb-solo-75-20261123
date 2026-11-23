@@ -1,0 +1,23 @@
+name: solo78-weavedesk
+services:
+  desk:
+    build:
+      context: .
+      args:
+        WEAVEDESK_RUNTIME_IMAGE: ${WEAVEDESK_RUNTIME_IMAGE:-python:3.12-slim}
+    image: ${WEAVEDESK_IMAGE:-solo78-weavedesk:1.0}
+    network_mode: bridge
+    environment:
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+    ports:
+      - "127.0.0.1:${WEAVEDESK_PORT:-19998}:8000"
+    volumes:
+      - textile-library:/var/lib/weavedesk
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/weave/health', timeout=3).status == 200"]
+      interval: 3s
+      timeout: 4s
+      retries: 12
+volumes:
+  textile-library:

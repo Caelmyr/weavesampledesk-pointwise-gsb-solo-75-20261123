@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Weave Sample Desk</title>
+  <link rel="stylesheet" href="/static/weave.css">
+  <script defer src="/static/weave.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/">Weave Sample Desk</a>
+    <a class="preparation" href="/prepare">Image preparation</a>
+  </header>
+  <main class="desk">
+    <aside class="library">
+      <header class="section-heading">
+        <h2>Sample runs</h2>
+        <button id="new-run">New run</button>
+      </header>
+      <div id="runs" class="entries"></div>
+      <button id="open-demo" class="demo">Open sample textile</button>
+    </aside>
+    <section id="welcome" class="welcome">
+      <h1>Inspect a woven sample</h1>
+      <p>Open the sample or start a run with a calibrated photograph of your sample.</p>
+    </section>
+    <section id="work" hidden>
+      <header class="run-head">
+        <div>
+          <h1 id="run-title"></h1>
+          <p id="stock"></p>
+        </div>
+        <div class="actions">
+          <button id="add-photo">Add photograph</button>
+          <button id="take-reading" class="primary">Take reading</button>
+        </div>
+      </header>
+      <p id="notice" role="status"></p>
+      <div class="main-grid">
+        <div class="sample-stack">
+          <div id="photos" class="photo-tabs"></div>
+          <section id="active-photo" class="sample-card" hidden>
+            <header class="section-heading">
+              <div>
+                <h2 id="photo-title"></h2>
+                <p id="photo-info"></p>
+              </div>
+              <div class="actions">
+                <button id="calibrate">Calibrate sample</button>
+                <button id="new-mark">Mark area</button>
+                <a id="download-original">Original</a>
+              </div>
+            </header>
+            <div id="preview" class="image-stage">
+              <img id="sample-image" alt="Registered photograph of the selected textile">
+              <canvas id="sample-overlay" aria-hidden="true"></canvas>
+            </div>
+          </section>
+        </div>
+        <aside class="notes">
+          <section>
+            <div class="section-heading"><h2>Marked references</h2></div>
+            <div id="marks" class="entries"></div>
+          </section>
+          <section>
+            <div class="section-heading"><h2>Saved readings</h2></div>
+            <div id="readings" class="entries"></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <dialog id="dialog">
+    <header class="dialog-head">
+      <h2 id="dialog-title"></h2>
+      <button id="dialog-close" aria-label="Close">×</button>
+    </header>
+    <div id="dialog-message" class="message" role="alert"></div>
+    <div id="dialog-body"></div>
+  </dialog>
+</body>
+</html>
