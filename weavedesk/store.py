@@ -69,7 +69,7 @@ class Library:
             current = stamp()
             run = {
                 **fields, "id": identity(), "revision": 1, "created": current, "updated": current,
-                "photos": photos or [], "marks": marks or [], "readings": [],
+                "photos": photos or [], "marks": marks or [], "readings": [], "reference": None,
             }
             atomic_write(self.runs / (run["id"] + ".json"), encode_doc(run))
             return run

@@ -57,14 +57,53 @@ def dye_contrast(frame, marks, _opts):
     return {"lightness_drop": round(lightness_drop, 4), "delta_e76": round(distance, 4)}, rows, shown
 
 
-def dye_projection(frame, undyed, dyed):
-    blank_rgb = np.median(frame.rgb[selection(frame, undyed)], axis=0)
-    dyed_rgb = np.median(frame.rgb[selection(frame, dyed)], axis=0)
+def projection(rgb, blank_rgb, dyed_rgb):
     difference = dyed_rgb - blank_rgb
     leverage = float(difference @ difference)
     if leverage < .014:
         raise Invalid("Choose two yarn controls with stronger color separation.")
-    return (frame.rgb - blank_rgb) @ difference / leverage
+    return (rgb - blank_rgb) @ difference / leverage
+
+
+def dye_projection(frame, undyed, dyed):
+    blank_rgb = np.median(frame.rgb[selection(frame, undyed)], axis=0)
+    dyed_rgb = np.median(frame.rgb[selection(frame, dyed)], axis=0)
+    return projection(frame.rgb, blank_rgb, dyed_rgb)
+
+
+def dye_reference(frame, marks, opts):
+    masks = {key: selection(frame, marks[key]) for key in ("undyed", "dyed", "half")}
+    low = number(opts.get("half_low", .4), "half-dyed interval lower bound", 0, 1)
+    high = number(opts.get("half_high", .6), "half-dyed interval upper bound", 0, 1)
+    if not low < high:
+        raise Invalid("The half-dyed interval lower bound must be below the upper bound.")
+    blank_rgb = np.median(frame.rgb[masks["undyed"]], axis=0)
+    dyed_rgb = np.median(frame.rgb[masks["dyed"]], axis=0)
+    fraction = projection(frame.rgb, blank_rgb, dyed_rgb)
+    half_reading = float(np.median(fraction[masks["half"]]))
+    undyed_low, undyed_high = np.percentile(fraction[masks["undyed"]], [10, 90])
+    spread = float(undyed_high - undyed_low)
+    values = {key: np.median(lab(frame.rgb[area]), axis=0) for key, area in masks.items()}
+    lightness_drop = float(values["undyed"][0] - values["dyed"][0])
+    distance = float(np.linalg.norm(values["undyed"] - values["dyed"]))
+    shown = image(frame)
+    tint(shown, masks["undyed"], (.84, .75, .32))
+    tint(shown, masks["dyed"], (.39, .68, .96))
+    tint(shown, masks["half"], (.47, .82, .55))
+    rows = []
+    for key, value in values.items():
+        row = {"mark": marks[key]["title"], "lab": rounded(value), "pixels": int(masks[key].sum())}
+        if key == "half":
+            row["reading"] = round(half_reading, 4)
+        rows.append(row)
+    summary = {
+        "half_reading": round(half_reading, 4), "half_interval": [low, high],
+        "within_interval": bool(low <= half_reading <= high),
+        "undyed_spread": round(spread, 4),
+        "lightness_drop": round(lightness_drop, 4), "delta_e76": round(distance, 4),
+        "undyed_rgb": rounded(blank_rgb), "dyed_rgb": rounded(dyed_rgb),
+    }
+    return summary, rows, shown
 
 
 def dyed_coverage(frame, marks, opts):
@@ -83,6 +122,30 @@ def dyed_coverage(frame, marks, opts):
     ]
     return {"dyed_area_pct": round(100 * dyed.sum() / area.sum(), 3),
             "threshold": threshold, "pixels": int(area.sum())}, rows, shown
+
+
+def adopted_coverage(frame, marks, opts, reference):
+    area = selection(frame, marks["region"])
+    blank_rgb = np.asarray(reference["undyed_rgb"], dtype=float)
+    dyed_rgb = np.asarray(reference["dyed_rgb"], dtype=float)
+    fraction = projection(frame.rgb, blank_rgb, dyed_rgb)
+    threshold = number(opts.get("threshold", .5), "dyed-yarn threshold", .1, .9)
+    dyed = area & (fraction >= threshold)
+    border = area & (np.abs(fraction - threshold) < .08)
+    shown = image(frame)
+    tint(shown, area & ~dyed, (.36, .71, .95), .2)
+    tint(shown, dyed, (.27, .79, .51))
+    tint(shown, border, (.94, .67, .29), .34)
+    rows = [
+        {"class": key, "pixels": int(mask.sum())}
+        for key, mask in (("Dyed", dyed), ("Undyed", area & ~dyed), ("Near threshold", border))
+    ]
+    return {"dyed_area_pct": round(100 * dyed.sum() / area.sum(), 3),
+            "threshold": threshold, "pixels": int(area.sum()),
+            "reference_photo": reference["photo"]["title"],
+            "reference_photo_id": reference["photo"]["id"],
+            "reference_reading": reference["reading"],
+            "reference_adopted": reference["adopted"]}, rows, shown
 
 
 def weave_period(frame, marks, _opts):

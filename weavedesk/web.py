@@ -12,6 +12,8 @@ from .store import Library, identity, stamp
 MEASUREMENTS = {
     "cloth-tone": (analysis.cloth_tone, {"region": "inspect"}, {}),
     "dye-contrast": (analysis.dye_contrast, {"undyed": "undyed", "dyed": "dyed"}, {}),
+    "dye-reference": (analysis.dye_reference, {"undyed": "undyed", "dyed": "dyed", "half": "half"}, {}),
+    "adopted-coverage": (analysis.adopted_coverage, {"region": "woven"}, {}),
     "dyed-coverage": (analysis.dyed_coverage, {"region": "woven", "undyed": "undyed", "dyed": "dyed"}, {}),
     "weave-period": (analysis.weave_period, {"region": "repeat"}, {}),
     "light-openings": (analysis.light_openings, {"region": "transmit"}, {}),
@@ -24,11 +26,18 @@ MEASUREMENTS = {
 }
 PAIRED = {"motif-offset", "paired-coverage", "color-drift"}
 OPTIONS = {
+    "dye-reference": {"half_low": ["Half-dyed reading lower bound", .4, .01],
+                      "half_high": ["Half-dyed reading upper bound", .6, .01]},
+    "adopted-coverage": {"threshold": ["Dyed yarn threshold", .5, .01]},
     "dyed-coverage": {"threshold": ["Dyed yarn threshold", .5, .01]},
     "light-openings": {"luma": ["Transmitted light threshold", .62, .01]},
     "surface-marks": {"contrast": ["Spot contrast", .075, .005], "minimum_mm2": ["Minimum area (mm²)", .15, .01]},
     "color-drift": {"delta_e": ["Color difference threshold", 5, .1]},
 }
+
+ADOPT_RULE = ("Among the dye reference checks whose known half-dyed patch reads inside the interval given "
+              "with the reading, adopt the set whose half-dyed reading lies closest to 0.5; break ties "
+              "toward the smaller undyed-cloth spread, then toward the earlier reading.")
 
 
 def input_json():
@@ -65,6 +74,14 @@ def measure(library, run, data):
         read_marks(other_roles, other)
         used.append(other)
         summary, rows, pixels = work(source_frame, other_frame, selected, options)
+    elif mode == "adopted-coverage":
+        reference = run.get("reference")
+        if not reference:
+            raise Invalid("Adopt a dye reference set before taking this reading.")
+        summary, rows, pixels = work(source_frame, selected, options, reference)
+        origin = next((photo for photo in run["photos"] if photo["id"] == reference["photo"]["id"]), None)
+        if origin is not None and origin["id"] != source["id"]:
+            used.append(origin)
     else:
         summary, rows, pixels = work(source_frame, selected, options)
     return {
@@ -195,6 +212,39 @@ def install(app, root):
         result = measure(library, run, data)
         updated, reading = library.save_reading(key, data["revision"], result)
         return jsonify(run=updated, reading=reading), 201
+
+    @api.post("/runs/<key>/reference/adopt")
+    def adopt_reference(key):
+        data = input_json()
+        run = library.run(key)
+        candidates = []
+        for row in run["readings"]:
+            if row["mode"] != "dye-reference":
+                continue
+            detail = library.reading(run, row["id"])
+            summary = detail["summary"]
+            photo = detail["photos"][0]
+            candidates.append({
+                "reading": detail["id"], "recorded": detail["recorded"],
+                "photo": {"id": photo["id"], "title": photo["title"]},
+                "half_reading": summary["half_reading"], "half_interval": summary["half_interval"],
+                "undyed_spread": summary["undyed_spread"], "within_interval": summary["within_interval"],
+            })
+        eligible = [item for item in candidates if item["within_interval"]]
+        if not eligible:
+            raise Invalid("None of the saved dye reference checks reads the half-dyed patch inside its interval.")
+        chosen = min(eligible, key=lambda item: (abs(item["half_reading"] - .5), item["undyed_spread"], item["recorded"]))
+        summary = library.reading(run, chosen["reading"])["summary"]
+        reference = {
+            **chosen, "adopted": stamp(), "rule": ADOPT_RULE,
+            "undyed_rgb": summary["undyed_rgb"], "dyed_rgb": summary["dyed_rgb"],
+            "candidates": candidates,
+        }
+
+        def apply(current):
+            current["reference"] = reference
+
+        return jsonify(run=library.change(key, data.get("revision"), apply), reference=reference)
 
     @api.get("/runs/<key>/readings/<reading_id>")
     def reading_detail(key, reading_id):

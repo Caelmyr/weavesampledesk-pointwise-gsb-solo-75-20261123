@@ -8,7 +8,8 @@ ROLES = {
     "face": "Face light", "backlight": "Transmitted light", "rake": "Raking light",
 }
 MARKS = {
-    "undyed": "Undyed reference", "dyed": "Solid dyed reference", "repeat": "Weave repeat patch",
+    "undyed": "Undyed reference", "dyed": "Solid dyed reference", "half": "Half-dyed check patch",
+    "repeat": "Weave repeat patch",
     "transmit": "Transmitted-light patch", "inspect": "Inspection patch",
     "warp": "Warp reference", "weft": "Weft reference", "woven": "Mixed weave patch",
     "register": "Matched motif points", "stroke": "Selvedge transect",
@@ -16,6 +17,8 @@ MARKS = {
 READINGS = {
     "cloth-tone": ("Cloth tone", "Measure color and variation in a cloth patch."),
     "dye-contrast": ("Dye contrast", "Compare solid dyed yarn with an undyed control on the same sample."),
+    "dye-reference": ("Dye reference check", "Read the known half-dyed patch through this photo's own undyed and dyed references."),
+    "adopted-coverage": ("Dyed area (adopted reference)", "Measure the proportion of a marked design with the adopted dye reference set."),
     "dyed-coverage": ("Dyed area", "Measure the proportion of a marked design close to the dyed yarn reference."),
     "weave-period": ("Weave periods", "Read dominant spatial periods and fiber directions from a repeat patch."),
     "light-openings": ("Transmitted openings", "Locate and measure visible pore or tear openings against the dark weave."),

@@ -110,6 +110,11 @@ function renderDesk() {
   if (!run) return;
   byId("run-title").textContent = run.title;
   byId("stock").textContent = [run.stock, run.width_mm + " × " + run.height_mm + " mm"].filter(Boolean).join(" / ");
+  const reference = run.reference;
+  byId("reference-line").textContent = reference
+    ? "Adopted dye reference: " + reference.photo.title + " / half-dyed reads " + reference.half_reading +
+      " in " + reference.half_interval.join("–") + " / undyed spread " + reference.undyed_spread
+    : "";
   byId("photos").replaceChildren(...run.photos.map((photo) => entry(
     photo.title, photo.corners ? state.config.roles[photo.role] : "Needs sample calibration",
     () => {
@@ -373,6 +378,15 @@ function showMark(mark) {
   open(mark.title, view);
 }
 
+async function adoptReference() {
+  const result = await api(runURL() + "/reference/adopt", "POST", { revision: state.run.revision });
+  replaceRun(result.run);
+  const chosen = result.reference;
+  byId("notice").textContent = "Adopted the dye reference from “" + chosen.photo.title + "”: half-dyed reads " +
+    chosen.half_reading + " (closest to 0.5 among " + chosen.candidates.filter((item) => item.within_interval).length +
+    " eligible check(s)). Later readings leave this adoption untouched.";
+}
+
 function measurement() {
   const available = state.config.readings;
   const operation = select("mode", Object.entries(available).map(([key, value]) => [key, value.title]));
@@ -389,6 +403,12 @@ function measurement() {
     controls = {};
     options = {};
     hint.textContent = spec.help;
+    if (operation.value === "adopted-coverage") {
+      const reference = state.run.reference;
+      hint.textContent += reference
+        ? " Using the reference adopted from “" + reference.photo.title + "”."
+        : " No dye reference adopted yet — use Adopt dye reference first.";
+    }
     fields.replaceChildren();
     if (spec.paired) fields.append(field("Comparison photograph", comparison));
     function addMarks(specification, photo) {
@@ -473,6 +493,7 @@ async function init() {
   for (const [id, operation] of Object.entries({
     "new-run": newRun, "add-photo": addPhoto, "new-mark": newMark, "calibrate": calibration,
     "take-reading": measurement, "open-demo": async () => openNewRun(await api("/weave/demo", "POST")),
+    "adopt-reference": adoptReference,
   })) {
     byId(id).addEventListener("click", guarded(operation));
   }
