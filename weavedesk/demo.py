@@ -21,6 +21,11 @@ def box(x0, y0, x1, y1):
     return points([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
 
 
+def dial(cx, cy, radius, sides=10):
+    return points([(cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+                   for angle in (2 * math.pi * step / sides for step in range(sides))])
+
+
 def sample_photograph(role, shift, seed):
     y, x = np.indices((HEIGHT, WIDTH), dtype=np.float32)
     local_x, local_y = x - shift[0], y - shift[1]
@@ -93,6 +98,8 @@ def create(library):
             ("Plain repeat panel", "repeat", box(493, 170, 563, 222)),
             ("Transmitted pores", "transmit", box(259, 347, 422, 479)),
             ("Streak and spot check", "inspect", box(506, 327, 750, 501)),
+            ("Raised fuzz spot", "fuzz", dial(573, 403, 11)),
+            ("Weave sheen patch", "sheen", box(715, 395, 745, 425)),
             ("Across selvedge edge", "stroke", points([(780, 395), (875, 395)])),
             ("Corresponding motif marks", "register", points([
                 (fx + shift[0] + (i % 2), fy + shift[1]) for i, (fx, fy) in enumerate(FIDUCIALS)

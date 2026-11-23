@@ -447,6 +447,61 @@ function table(rows) {
   return wrapper;
 }
 
+function pointInspection(reading, snapshot) {
+  const url = runURL() + "/readings/" + reading.id;
+  const section = element("section");
+  section.className = "point-inspector";
+  section.append(element("h3", "Inspect a point"));
+  const hint = element("p", "Click the report image at a suspect spot or where a photograph missed. "
+    + "The two source photographs are read at the same cloth position.");
+  const output = element("div");
+  output.className = "point-results";
+  section.append(hint, output);
+
+  function render(result) {
+    const cards = result.photos.map((photo) => {
+      const card = element("article");
+      card.className = "point-card";
+      const heading = element("header");
+      heading.append(element("h4", photo.title), element("small", displayName(photo.role)));
+      const readings = element("dl");
+      const rows = [
+        ["Clarity", photo.view.status],
+        ["Brightness", display(photo.view.luma)],
+        ["Source pixel", photo.location.pixel.join(", ") + " of " + photo.location.width + " × " + photo.location.height],
+        ["Plane position", result.point.map((value) => value.toFixed(4)).join(" · ")],
+      ];
+      for (const [name, value] of rows) readings.append(element("dt", name), element("dd", value));
+      const open = link("Open original with this point",
+        url + "/point/" + photo.photo + "/image?x=" + result.point[0] + "&y=" + result.point[1]);
+      open.target = "_blank";
+      open.rel = "noopener";
+      card.append(heading, readings, open);
+      if (photo.view.status !== "Clear") card.classList.add("unclear");
+      return card;
+    });
+    output.replaceChildren(...cards);
+    hint.textContent = result.missing.length
+      ? "Not clear in: " + result.missing.join(", ") + "."
+      : "Both source photographs are clear at this point.";
+  }
+
+  snapshot.addEventListener("click", guarded(async (event) => {
+    const fit = fittedImage(snapshot);
+    if (!fit) return;
+    const rect = snapshot.getBoundingClientRect();
+    const x = (event.clientX - rect.left - fit.x) / fit.width;
+    const y = (event.clientY - rect.top - fit.y) / fit.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    render(await api(url + "/point?x=" + x + "&y=" + y));
+  }));
+  return section;
+}
+
+function titleCase(value) {
+  return displayName(value.replace("_pct", " (%)"));
+}
+
 function openReading(reading) {
   const url = runURL() + "/readings/" + reading.id;
   const pane = element("div");
@@ -455,15 +510,22 @@ function openReading(reading) {
   const snapshot = element("img");
   snapshot.alt = "Archived measurement overlay";
   snapshot.src = url + "/overlay";
+  snapshot.classList.add("point-picker");
   const summary = element("dl");
   for (const [key, value] of Object.entries(reading.summary)) {
-    summary.append(element("dt", displayName(key)), element("dd", display(value)));
+    summary.append(element("dt", titleCase(key)), element("dd", display(value)));
   }
-  hero.append(snapshot, summary);
+  const aside = element("div");
+  aside.append(summary);
+  if (reading.summary.rule_reason) {
+    aside.append(Object.assign(element("p", reading.summary.rule_reason), { className: "rule-reason" }));
+  }
+  hero.append(snapshot, aside);
   const links = element("div");
   links.className = "result-actions";
   links.append(link("Download CSV", url + "/csv"), link("Download evidence packet", url + "/packet"));
   pane.append(hero);
+  pane.append(pointInspection(reading, snapshot));
   if (reading.rows.length) pane.append(table(reading.rows));
   pane.append(links);
   open(reading.title, pane);

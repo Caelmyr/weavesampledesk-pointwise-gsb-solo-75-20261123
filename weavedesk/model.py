@@ -12,6 +12,7 @@ MARKS = {
     "transmit": "Transmitted-light patch", "inspect": "Inspection patch",
     "warp": "Warp reference", "weft": "Weft reference", "woven": "Mixed weave patch",
     "register": "Matched motif points", "stroke": "Selvedge transect",
+    "fuzz": "Confirmed fuzz reference", "sheen": "Weave-sheen reference",
 }
 READINGS = {
     "cloth-tone": ("Cloth tone", "Measure color and variation in a cloth patch."),
@@ -25,6 +26,7 @@ READINGS = {
     "paired-coverage": ("Paired sample coverage", "Locate observations shared by two calibrated textile photographs."),
     "surface-marks": ("Surface spot map", "Find localized mottle and raised-fiber highlights on a raking-light patch."),
     "color-drift": ("Sample color difference", "Read registered color differences in a selected area of two cloth photographs."),
+    "raised-fiber": ("Raised-fiber comparison", "Compare face and raking light in one patch to separate raised fuzz from weave sheen."),
 }
 POINT_MARKS = {"register", "stroke"}
 IDENTITY = re.compile(r"^[0-9a-f]{24}$")

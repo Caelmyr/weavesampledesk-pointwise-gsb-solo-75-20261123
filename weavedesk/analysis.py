@@ -261,6 +261,110 @@ def surface_marks(frame, marks, opts):
     return {"spots": len(rows), "spot_fraction_pct": round(100 * accumulated.sum() / area.sum(), 3)}, rows[:50], shown
 
 
+def raised_fiber(frame, other, marks, opts):
+    domain = region(frame, marks["region"])
+    both = domain & frame.useful & other.useful
+    if both.sum() < 250:
+        raise Invalid("Both photographs need useful pixels in this inspection patch.")
+    minimum = number(opts.get("minimum_mm2", .15), "minimum spot area", .03, 40)
+    keep = number(opts.get("keep_min", .9), "minimum confirmed-fuzz retention", .3, 1)
+    falsely = number(opts.get("false_max", .08), "maximum sheen false-mark rate", 0, .5)
+
+    def relief(luma, useful):
+        # A 2.5 mm core against a 6 mm surround, in units of the patch's robust spread.
+        pixel = float(np.hypot(*frame.step))
+        core, surround = 2.5 / pixel, 6.0 / pixel
+        filled = np.where(useful, luma, float(np.median(luma[both])))
+        residual = (cv.GaussianBlur(filled.astype(np.float32), (0, 0), core)
+                    - cv.GaussianBlur(filled.astype(np.float32), (0, 0), surround))
+        measured = residual[both]
+        scale = 1.4826 * float(np.median(np.abs(measured - np.median(measured))))
+        return residual / max(scale, 1e-4)
+
+    face = relief(frame.luma, frame.useful)
+    rake = relief(other.luma, other.useful)
+    confirmed = region(frame, marks["confirmed"]) & both
+    sheen = region(frame, marks["sheen"]) & both
+    if not confirmed.any() or not sheen.any():
+        raise Invalid("Both reference patches need pixels that are clear in both photographs.")
+
+    # Rule A marks only what both lights lift above the local weave; rule B marks what the
+    # raking light lifts further than the face light. One rule is adopted per reading.
+    conditions = {
+        "both": both & (face >= 1.5) & (rake >= 1.5),
+        "extra": both & ((rake - face) >= 1.5),
+    }
+    pixel_area = frame.step[0] * frame.step[1]
+
+    def components(condition):
+        count, component = cv.connectedComponents(condition.astype(np.uint8), connectivity=8)
+        kept = np.zeros(domain.shape, dtype=bool)
+        found = []
+        for label in range(1, count):
+            selected = component == label
+            size = float(selected.sum() * pixel_area)
+            if size < minimum:
+                continue
+            kept |= selected
+            ys, xs = np.nonzero(selected)
+            found.append({"size_mm2": round(size, 4),
+                          "center_mm": rounded(np.array([xs.mean() * frame.step[0], ys.mean() * frame.step[1]]), 3)})
+        return kept, found
+
+    evaluated = {}
+    for rule, condition in conditions.items():
+        kept, found = components(condition)
+        evaluated[rule] = {
+            "rule": rule,
+            "retained_pct": round(100 * np.count_nonzero(confirmed & kept) / confirmed.sum(), 3),
+            "false_mark_pct": round(100 * np.count_nonzero(sheen & kept) / sheen.sum(), 3),
+            "spots": len(found), "spot_fraction_pct": round(100 * kept.sum() / both.sum(), 3),
+            "components": found,
+        }
+    for report in evaluated.values():
+        report["retained_ok"] = report["retained_pct"] >= 100 * keep
+        report["false_ok"] = report["false_mark_pct"] <= 100 * falsely
+        report["eligible"] = report["retained_ok"] and report["false_ok"]
+
+    order = ("both", "extra")
+    eligible = [rule for rule in order if evaluated[rule]["eligible"]]
+    if eligible:
+        adopted = sorted(eligible, key=lambda rule: (-evaluated[rule]["retained_pct"],
+                                                     evaluated[rule]["false_mark_pct"], order.index(rule)))[0]
+        reason = "Both gates passed; the agreed order keeps the rule that retains more confirmed fuzz."
+    else:
+        def shortfall(rule):
+            report = evaluated[rule]
+            return (min(report["retained_pct"] - 100 * keep, 0)
+                    + min(100 * falsely - report["false_mark_pct"], 0))
+
+        adopted = sorted(order, key=lambda rule: (-shortfall(rule), order.index(rule)))[0]
+        reason = "Neither rule met both gates; the agreed order keeps the rule closest to both limits."
+
+    shown = image(frame)
+    tint(shown, conditions[adopted], (.30, .86, .55), .44)
+    for mark, color in ((marks["confirmed"], (.96, .58, .24)), (marks["sheen"], (.34, .72, .95))):
+        vertices = np.rint(coordinates(mark["points"], shown.shape)).astype(np.int32)
+        cv.polylines(shown, [vertices], True, color, 2)
+    winner = evaluated[adopted]
+    summary = {
+        "adopted_rule": adopted, "rule_reason": reason, "passing_rules": eligible,
+        "retained_pct": winner["retained_pct"], "false_mark_pct": winner["false_mark_pct"],
+        "spots": winner["spots"], "spot_fraction_pct": winner["spot_fraction_pct"],
+        "keep_min_pct": round(100 * keep, 3), "false_max_pct": round(100 * falsely, 3),
+    }
+    rows = [{
+        "rule": "Both lights" if rule == "both" else "Raking excess",
+        "retained_pct": evaluated[rule]["retained_pct"], "false_mark_pct": evaluated[rule]["false_mark_pct"],
+        "spots": evaluated[rule]["spots"], "spot_fraction_pct": evaluated[rule]["spot_fraction_pct"],
+        "gate": ("Eligible" if evaluated[rule]["eligible"] else
+                 "Retention short" if not evaluated[rule]["retained_ok"] and evaluated[rule]["false_ok"] else
+                 "False marks over" if evaluated[rule]["retained_ok"] else "Both gates missed"),
+        "adopted": "Yes" if rule == adopted else "No",
+    } for rule in order]
+    return summary, rows, shown
+
+
 def color_drift(frame, other, marks, opts):
     domain = region(frame, marks["region"])
     area = domain & frame.useful & other.useful

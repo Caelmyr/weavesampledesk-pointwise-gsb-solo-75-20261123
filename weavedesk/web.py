@@ -21,13 +21,17 @@ MEASUREMENTS = {
     "paired-coverage": (analysis.paired_coverage, {"region": "inspect"}, {}),
     "surface-marks": (analysis.surface_marks, {"region": "inspect"}, {}),
     "color-drift": (analysis.color_drift, {"region": "inspect"}, {}),
+    "raised-fiber": (analysis.raised_fiber, {"region": "inspect", "confirmed": "fuzz", "sheen": "sheen"}, {}),
 }
-PAIRED = {"motif-offset", "paired-coverage", "color-drift"}
+PAIRED = {"motif-offset", "paired-coverage", "color-drift", "raised-fiber"}
 OPTIONS = {
     "dyed-coverage": {"threshold": ["Dyed yarn threshold", .5, .01]},
     "light-openings": {"luma": ["Transmitted light threshold", .62, .01]},
     "surface-marks": {"contrast": ["Spot contrast", .075, .005], "minimum_mm2": ["Minimum area (mm²)", .15, .01]},
     "color-drift": {"delta_e": ["Color difference threshold", 5, .1]},
+    "raised-fiber": {"keep_min": ["Confirmed fuzz retained (fraction)", .9, .01],
+                    "false_max": ["Sheen false-mark limit (fraction)", .08, .01],
+                    "minimum_mm2": ["Minimum area (mm²)", .15, .01]},
 }
 
 
@@ -204,6 +208,50 @@ def install(app, root):
     def reading_overlay(key, reading_id):
         result = library.reading(library.run(key), reading_id)
         return send_file(library.blob(result["overlay"]), mimetype="image/png")
+
+    @api.get("/runs/<key>/readings/<reading_id>/point")
+    def reading_point(key, reading_id):
+        run = library.run(key)
+        result = library.reading(run, reading_id)
+        try:
+            x = float(request.args.get("x"))
+            y = float(request.args.get("y"))
+        except (TypeError, ValueError) as error:
+            raise Invalid("Choose a point on the archived overlay.") from error
+        if not (0 <= x <= 1 and 0 <= y <= 1):
+            raise Invalid("Choose a point on the archived overlay.")
+        source = locate(run["photos"], result["photos"][0]["id"], "The reference photograph")
+        source_pixels = photos.decode(library.blob(source["blob"]).read_bytes())
+        recorded = photos.original_point(source["corners"], run, source_pixels.shape, x, y)
+        pair = [{"photo": source["id"], "title": source["title"], "role": source["role"],
+                 "filename": source["filename"], "location": recorded,
+                 "view": photos.sample(source_pixels, recorded["x"], recorded["y"])}]
+        if len(result["photos"]) > 1:
+            other = locate(run["photos"], result["photos"][1]["id"], "The comparison photograph")
+            other_pixels = photos.decode(library.blob(other["blob"]).read_bytes())
+            counterpart = photos.original_point(other["corners"], run, other_pixels.shape, x, y)
+            pair.append({"photo": other["id"], "title": other["title"], "role": other["role"],
+                         "filename": other["filename"], "location": counterpart,
+                         "view": photos.sample(other_pixels, counterpart["x"], counterpart["y"])})
+        return jsonify(reading={"id": result["id"], "title": result["title"], "mode": result["mode"]},
+                       sheet_mm=result["sheet_mm"], point=[x, y], photos=pair,
+                       missing=[item["title"] for item in pair if item["view"]["status"] != "Clear"])
+
+    @api.get("/runs/<key>/readings/<reading_id>/point/<photo_key>/image")
+    def reading_point_source(key, reading_id, photo_key):
+        run = library.run(key)
+        library.reading(run, reading_id)
+        photo = locate(run["photos"], photo_key, "The photograph")
+        try:
+            x = float(request.args.get("x"))
+            y = float(request.args.get("y"))
+        except (TypeError, ValueError) as error:
+            raise Invalid("Choose a point on the archived overlay.") from error
+        pixels = photos.decode(library.blob(photo["blob"]).read_bytes())
+        if not photo["corners"]:
+            raise Invalid("That photograph was never registered to the sample plane.")
+        recorded = photos.original_point(photo["corners"], run, pixels.shape, x, y)
+        return Response(photos.png(photos.marked(pixels, recorded["x"], recorded["y"])), mimetype="image/png")
 
     @api.get("/runs/<key>/readings/<reading_id>/csv")
     def reading_csv(key, reading_id):

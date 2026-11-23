@@ -107,3 +107,16 @@ th { position: sticky; top: 0; background: var(--tint); }
   dialog { width: 96vw; }
   .section-heading { align-items: flex-start; flex-wrap: wrap; }
 }
+.point-picker { cursor: crosshair; }
+.point-inspector { margin: 14px 0 0; border-top: 1px solid var(--rule); padding-top: 12px; }
+.point-inspector h3 { font-size: 1rem; margin: 0 0 5px; }
+.point-inspector h4 { font-size: .95rem; margin: 0; }
+.point-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 11px; margin-top: 10px; }
+.point-card { border: 1px solid var(--rule); border-radius: 8px; padding: 10px; background: #fcfaf2; display: grid; gap: 7px; }
+.point-card.unclear { border-color: #b57b4b; background: #fbf1e6; }
+.point-card header small { color: var(--muted); }
+.point-card dl { grid-template-columns: auto 1fr; font-size: .85rem; }
+.point-results:empty { display: none; }
+.rule-reason { margin-top: 8px; font-size: .86rem; color: #523f54; }
+.point-inspector p { font-size: .88rem; margin-top: 4px; }
+.point-card h4 { line-height: 1.2; }
